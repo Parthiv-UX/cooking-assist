@@ -18,3 +18,8 @@ Facilitator panel: triple-tap "Step n of N" (or press L on a laptop). Keyboard: 
   the right column holds step, quantities and controls. Voice state moves to a top-bar pill.
 - **No duplicate controls:** "Replay this moment" shows in portrait technique steps only; landscape uses Repeat.
 - All sizes snap to the ramp (32/30/20/18/16/14/13/12), 8pt spacing and the radius set; icons are Material Symbols Outlined.
+
+## Voice engines
+- **Hands-free (default):** offline Vosk recognizer (`model.tar.gz`, Indian-English small model) running in the browser,
+  limited to this recipe's command phrases. Mic stays open: no restart loop or beeps, robust to kitchen noise.
+- **Fallback / Tap to speak:** Chrome's speech recognition (needs internet, understands open questions incl. Hindi words).

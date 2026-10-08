@@ -745,8 +745,100 @@ let rec = null, recOn = false, oneShot = false, gotFinal = false, speaking = fal
 
 function setHandsFree(on){
   S.handsFree = on; log('handsfree', on?'on':'off', 'touch');
-  if (on){ setVoice('on'); startRec(true); }
-  else { stopRec(); restoreVolume(); setVoice('off'); }
+  if (on){
+    if (LOCAL.failed){ S.engine='web'; setVoice('on'); startRec(true); return; }
+    setVoice('on', 'Getting voice ready…', LOCAL.model ? 'Starting the mic' : 'First time only · about 20–40 s');
+    localStart().then(ok => {
+      if (!S.handsFree){ localStop(); return; }
+      if (ok){ S.engine='offline'; setVoice('on'); log('voice_engine','offline','system'); }
+      else { S.engine='web'; log('voice_engine','web (fallback)','system'); setVoice('on'); startRec(true); }
+    });
+  }
+  else { localStop(); stopRec(); restoreVolume(); setVoice('off'); }
+}
+
+/* ================================================================
+   OFFLINE VOICE ENGINE (Vosk, in-browser, grammar-limited)
+   The mic stays open: no restart loop, no beeps, no audio-focus pauses.
+   It only listens for this recipe's command phrases, so kitchen noise and
+   the video's own speech mostly come out as "unknown" and are ignored.
+   ================================================================ */
+const VOSK_JS = 'https://cdn.jsdelivr.net/npm/vosk-browser@0.0.8/dist/vosk.js';
+const MODEL_URL = 'model.tar.gz';
+const LOCAL = { model:null, rec:null, ctx:null, stream:null, src:null, node:null, failed:false, ignoreUntil:0 };
+function loadScript(src){ return new Promise((res,rej)=>{ const s=document.createElement('script'); s.src=src; s.onload=res; s.onerror=()=>rej(new Error('script '+src)); document.head.appendChild(s); }); }
+function withTimeout(p, ms, what){ return Promise.race([p, new Promise((_,rej)=>setTimeout(()=>rej(new Error(what+' timeout')), ms))]); }
+// Words missing from the offline model's vocabulary, spelled with in-vocabulary sound-alikes.
+const SOUNDALIKE = { turmeric:['term eric','term rick','tumor rick','her merrick'], haldi:['hal dee','hall dee','hal di','hardy'],
+  cardamom:['card a mom','car dam mom','card mom'], namak:['numb muck'], pyaz:['pie as'], chilli:['chili','chilly'] };
+function fromSoundalike(t){
+  for (const [word, alts] of Object.entries(SOUNDALIKE)) for (const a of alts) t = t.replace(new RegExp('\\b'+a+'\\b','g'), word);
+  return t;
+}
+function buildGrammar(){
+  const cmds = ['next','next step','go next','go back','back','previous','previous step','again','repeat','repeat that','replay',
+    'once more','pause','stop','pause the video','stop the video','play','resume','continue','play the video',
+    "what's next",'what is next','what comes next','show steps','show all steps','close','go','go ahead','stay','stay here','yes','no',
+    'start the timer','start timer','pause the timer','stop the timer','add a minute','add one minute','one more minute'];
+  const names = new Set();
+  Object.values(R.ingredients).forEach(g => g.aliases.forEach(a => { if (/^[a-z ]+$/.test(a) && a.split(' ').length <= 3) names.add(a); }));
+  for (const [word, alts] of Object.entries(SOUNDALIKE)) [...names].forEach(n => { if (n.includes(word)) alts.forEach(a => names.add(n.replace(word, a))); });
+  const q = [];
+  names.forEach(n => q.push(`how much ${n}`, `how many ${n}`, `i don't have ${n}`, `no ${n}`, `instead of ${n}`, `substitute ${n}`, `what can i use instead of ${n}`));
+  return cmds.concat(q, ['[unk]']);
+}
+async function localStart(){
+  try{
+    if (!window.isSecureContext || !navigator.mediaDevices) throw new Error('insecure context');
+    const head = await withTimeout(fetch(MODEL_URL, {method:'HEAD', cache:'no-store'}), 8000, 'model check');
+    if (!head.ok) throw new Error('model file missing ('+head.status+')');
+    if (!window.Vosk) await withTimeout(loadScript(VOSK_JS), 30000, 'engine download');
+    if (!LOCAL.model){
+      LOCAL.model = await withTimeout(Vosk.createModel(new URL(MODEL_URL, location.href).href), 120000, 'model load');
+    }
+    LOCAL.stream = await navigator.mediaDevices.getUserMedia({ video:false,
+      audio:{ echoCancellation:true, noiseSuppression:true, autoGainControl:true, channelCount:1 } });
+    LOCAL.ctx = new (window.AudioContext||window.webkitAudioContext)();
+    await LOCAL.ctx.resume();
+    LOCAL.rec = new LOCAL.model.KaldiRecognizer(LOCAL.ctx.sampleRate, JSON.stringify(buildGrammar()));
+    LOCAL.rec.setWords(true);
+    LOCAL.rec.on('result', m => onLocalResult(m.result));
+    LOCAL.rec.on('partialresult', m => onLocalPartial(m.result && m.result.partial));
+    LOCAL.src = LOCAL.ctx.createMediaStreamSource(LOCAL.stream);
+    LOCAL.node = LOCAL.ctx.createScriptProcessor(4096, 1, 1);
+    LOCAL.node.onaudioprocess = (e) => { if (S.handsFree && LOCAL.rec) { try{ LOCAL.rec.acceptWaveform(e.inputBuffer); }catch(err){} } };
+    LOCAL.src.connect(LOCAL.node); LOCAL.node.connect(LOCAL.ctx.destination);
+    return true;
+  }catch(e){
+    log('voice_engine_fail', String(e && e.message || e), 'system');
+    if (/not ?allowed|permission|denied/i.test(String(e && (e.name+e.message)))){ localStop(); S.handsFree=false; setVoice('unavailable','Mic blocked','Allow the mic in Chrome settings · touch works'); return false; }
+    LOCAL.failed = true; localStop(); return false;
+  }
+}
+function localStop(){
+  try{ LOCAL.node && (LOCAL.node.onaudioprocess = null, LOCAL.node.disconnect()); }catch(e){}
+  try{ LOCAL.src && LOCAL.src.disconnect(); }catch(e){}
+  try{ LOCAL.stream && LOCAL.stream.getTracks().forEach(t=>t.stop()); }catch(e){}
+  try{ LOCAL.ctx && LOCAL.ctx.close(); }catch(e){}
+  try{ LOCAL.rec && LOCAL.rec.remove(); }catch(e){}
+  LOCAL.node = LOCAL.src = LOCAL.stream = LOCAL.ctx = LOCAL.rec = null;
+}
+const clean = t => (t||'').replace(/\[unk\]/g,' ').replace(/\s+/g,' ').trim();
+function onLocalPartial(p){
+  p = fromSoundalike(clean(p));
+  if (!S.handsFree || speaking || Date.now() < LOCAL.ignoreUntil || !p) return;
+  if (S.voice !== 'listening') duck();
+  setVoice('listening', 'Listening…', `“${p}”`);
+}
+function onLocalResult(r){
+  const text = fromSoundalike(clean(r && r.text));
+  if (!S.handsFree) return;
+  if (speaking || Date.now() < LOCAL.ignoreUntil){ return; }
+  if (!text){ if (S.voice === 'listening'){ restoreVolume(); setVoice('on'); } return; }
+  const words = (r.result || []).filter(w => w.word !== '[unk]');
+  const conf = words.length ? words.reduce((a,w)=>a+w.conf,0)/words.length : 0;
+  const alts = [text]; alts.conf = conf;
+  handleUtterance(alts);
 }
 function toggleHandsFree(){ if (!SR) return; setHandsFree(!S.handsFree); }
 function listenOnce(){
@@ -779,7 +871,7 @@ function startRec(continuous){
       if (!gotFinal && S.voice === 'listening'){ restoreVolume(); setVoice('error','Didn’t catch that','Try again or use touch', 5000); }
       return;
     }
-    if (S.handsFree && !speaking) restartT = setTimeout(()=>{ if (S.handsFree && !speaking && cookEl) startRec(true); }, 250);
+    if (S.handsFree && S.engine !== 'offline' && !speaking) restartT = setTimeout(()=>{ if (S.handsFree && S.engine !== 'offline' && !speaking && cookEl) startRec(true); }, 250);
   };
   try { rec.start(); recOn = true; } catch(e){ recOn = false; }
 }
@@ -821,7 +913,8 @@ function handleUtterance(alts){
     return;
   }
   const bare = ['next','prev','repeat','pause','play'].includes(res.intent);
-  if (bare && !wasOneShot && alts.conf > 0 && alts.conf < 0.6){
+  const minConf = S.engine === 'offline' ? 0.55 : 0;
+  if (bare && !wasOneShot && alts.conf > 0 && alts.conf < minConf){
     log('voice_lowconf', `"${used}" ${alts.conf.toFixed(2)}`, 'ignored');
     if (S.voice === 'listening'){ restoreVolume(); setVoice(S.handsFree?'on':'off'); }
     return;
@@ -950,10 +1043,12 @@ function parse(raw){
   // short commands only (avoid triggers from the recipe video's own speech)
   if (w.length > 4) return null;
   // single words must be exactly the command (noise often transcribes to one stray word)
+  const ALIKE = { nest:'next', necks:'next', neck:'next', text:'next', nex:'next', nexxt:'next', paws:'pause', pose:'pause', pours:'pause', pas:'pause', plate:'play', played:'play', blay:'play', ripped:'repeat' };
+  if (w.length === 1 && ALIKE[w[0]]) return parse(ALIKE[w[0]]);
   if (w.length === 1 && !/^(next|back|previous|again|repeat|replay|pause|stop|play|resume|continue|aage|peeche|dobara|ruko)$/.test(w[0])) return null;
   if (has(/\b(go back|previous|last step|step back|back|peeche|pichhe|pichla)\b/)) return {intent:'prev'};
   if (has(/\b(again|repeat|replay|once more|one more time|say again|show again|phir se|dobara|dubara)\b/)) return {intent:'repeat'};
-  if (has(/\b(next|next step|go next|done|aage|forward|skip|move on|nest|necks)\b/)) return {intent:'next'};
+  if (has(/\b(next|next step|go next|done|aage|forward|skip|move on|nest|necks|next one)\b/)) return {intent:'next'};
   if (has(/^ (pause|stop|pause it|stop it|pause video|stop video|pause the video|stop the video|hold on|ruko) $/)) return {intent:'pause'};
   if (has(/^ (play|continue|resume|play it|play video|play the video|resume video|go on|carry on|chalo) $/)) return {intent:'play'};
   return null;
@@ -970,8 +1065,8 @@ function speak(text){
     const v = speechSynthesis.getVoices().find(v=>/en[-_]IN/i.test(v.lang)) || speechSynthesis.getVoices().find(v=>/^en/i.test(v.lang));
     if (v) u.voice = v;
     speaking = true;
-    if (S.handsFree){ try{ rec && (rec.onend=null, rec.abort()); }catch(e){} recOn=false; }
-    const done = () => { speaking = false; if (S.wantPlay && !S.playing) scheduleResume(); if (S.handsFree && cookEl) setTimeout(()=>{ if(S.handsFree && !speaking) startRec(true); }, 200); };
+    if (S.handsFree && S.engine !== 'offline'){ try{ rec && (rec.onend=null, rec.abort()); }catch(e){} recOn=false; }
+    const done = () => { speaking = false; LOCAL.ignoreUntil = Date.now() + 350; if (S.wantPlay && !S.playing) scheduleResume(); if (S.handsFree && S.engine !== 'offline' && cookEl) setTimeout(()=>{ if(S.handsFree && !speaking) startRec(true); }, 200); };
     u.onend = done; u.onerror = done;
     speechSynthesis.speak(u);
     setTimeout(()=>{ if (speaking) done(); }, 8000);
@@ -997,7 +1092,7 @@ async function requestWake(){ try{ if ('wakeLock' in navigator) wake = await nav
 function releaseWake(){ try{ wake && wake.release(); }catch(e){} wake = null; }
 document.addEventListener('visibilitychange', ()=>{ if (document.visibilityState==='visible' && cookEl && !cookEl.style.visibility) requestWake(); });
 
-function stopEverything(){ stopRec(); S.handsFree=false; releaseWake(); destroyCook(); try{speechSynthesis.cancel();}catch(e){} restoreVolume(); }
+function stopEverything(){ localStop(); stopRec(); S.handsFree=false; releaseWake(); destroyCook(); try{speechSynthesis.cancel();}catch(e){} restoreVolume(); }
 
 /* ---------- Orientation ---------- */
 let lastLand = null;
@@ -1050,7 +1145,7 @@ function openFacilitator(){
   const d = document.createElement('div'); d.className='fac';
   const lines = LOG.events.map(e=>`${new Date(e.t).toLocaleTimeString()}\tS${e.step}\t${e.via||'-'}\t${e.type}\t${e.detail}`).join('\n');
   d.innerHTML = `<h3>Facilitator panel</h3>
-    <p>Session log for usability testing. Prototype notes: the YouTube page, share sheet and “preparing” stages are simulated; the recipe and answers were prepared manually from the video. Video playback, step clips, voice recognition, timers and layouts are real. Step times: <b>${R.marksSource}</b>.</p>
+    <p>Session log for usability testing. Prototype notes: the YouTube page, share sheet and “preparing” stages are simulated; the recipe and answers were prepared manually from the video. Video playback, step clips, voice recognition, timers and layouts are real. Step times: <b>${R.marksSource}</b>. Voice engine: <b>${S.engine||'not started'}</b>${LOCAL.failed?' (offline model unavailable — using browser speech)':''}.</p>
     <table>${Object.entries(s).map(([k,v])=>`<tr><td>${k.replace(/([A-Z])/g,' $1').toLowerCase()}</td><td style="text-align:right"><b>${v}</b></td></tr>`).join('')}
       <tr><td>session length</td><td style="text-align:right"><b>${Math.round((Date.now()-LOG.t0)/60000)} min</b></td></tr></table>
     <textarea readonly>${esc(lines)}</textarea>
