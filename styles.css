@@ -427,3 +427,14 @@ button:focus-visible,a:focus-visible{outline:3px solid var(--primary);outline-of
 #cookSheet .scrim{z-index:40}
 #cookSheet .sheet{z-index:41}
 @media (orientation:landscape) and (max-height:560px){ .cook .strip .replay-btn{display:none} }
+/* v2: step-type tag, swap affordance */
+.stype{display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 12px 0 8px;border-radius:var(--r-pill);background:var(--muted-s);color:var(--text-2);font-size:13px;line-height:18px;font-weight:600;margin-top:var(--s5)}
+.stype .ms{color:var(--primary)}
+.stype + .step-h{margin-top:var(--s2)}
+.swap{display:flex;align-items:center;gap:4px;height:36px;padding:0 12px 0 8px;border-radius:12px;background:var(--surface);box-shadow:inset 0 0 0 1.5px var(--outline);color:var(--text);font-size:13px;font-weight:600;flex:none}
+.swap .ms{color:var(--slate)}
+.swaphint{display:flex;align-items:center;gap:6px;margin-top:var(--s3);font-size:13px;line-height:18px;color:var(--text-2)}
+.swaphint .ms{color:var(--slate)}
+.srow .sti{color:var(--text-2);display:flex}
+.srow .sti .ms{color:inherit!important}
+@media (orientation:landscape) and (max-height:560px){ .cook .stype{margin-top:0} .cook .swaphint{display:none} .cook .swap{height:32px} }

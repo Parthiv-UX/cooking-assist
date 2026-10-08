@@ -13,7 +13,8 @@ const app = $('#app');
 const MS = { close:'e14c', list:'e242', back:'e5c4', fwd:'e5c8', arrowR:'e5c8', chev:'e409', replay:'e042', mic:'e029', micoff:'e02b',
   check:'e5ca', ccheck:'e86c', radio:'e836', radioon:'e837', play:'e037', pause:'e034', timer:'e425', volume:'e050', book:'ea19',
   bulb:'e0f0', hear:'f104', voice:'e1b8', off:'e04c', rotate:'e1c1', lock:'e88d', share:'e80d', like:'e817', save:'e866',
-  dots:'e5d3', home:'e88a', plus:'e147', skillet:'f543', add:'e145' };
+  dots:'e5d3', home:'e88a', plus:'e147', skillet:'f543', add:'e145', swap:'e8d4', measure:'ef97', watch:'e417', wait:'ea5b', wake:'e91f' };
+const STYPE = { ingredient:['measure','Measure & add'], technique:['watch','Watch & do'], time:['wait','Wait'] };
 const FILLED = { ccheck:1, play:1 };
 function ic(name, size=24, color){
   const st = `font-size:${size}px` + (color && color!=='currentColor' ? `;color:${color}` : '');
@@ -49,7 +50,8 @@ const S = {
   overlay: null, overviewOpen: false, jumpTarget: null, watching: false,
   timers: {},           // stepIndex -> {total, remaining, running, endAt, done}
   startedAt: 0, hintShown: false, videoOk: true, playerReady: false,
-  segEnd: null, segLabel: null, playing: false, landscape: false, wantPlay: false,
+  segEnd: null, segLabel: null, playing: false, landscape: false, wantPlay: false, awakeUntil: 0,
+  wake: (()=>{ try{ return localStorage.getItem('ca_wake')!=='0'; }catch(e){ return true; } })(),
   mute: (()=>{ try{ return localStorage.getItem('ca_mute')==='1'; }catch(e){ return false; } })()
 };
 
@@ -245,6 +247,7 @@ function onCookClick(e){
     case 'stay': act('stay','touch'); break;
     case 'goPreview': act('goPreview','touch'); break;
     case 'dismiss': clearOverlay(); break;
+    case 'swap': log('swap_tap', arg, 'touch'); answerSub(arg); break;
     case 'retryVideo': log('video_retry','','touch'); retryVideo(); break;
     case 'hintGo': case 'hintKeep': clearOverlay(); log('orientation_hint', a, 'touch'); break;
   }
@@ -336,13 +339,16 @@ function ingRows(st, askedId){
   if (!st.items.length) return '';
   return `<div class="ings">${st.items.map(id=>{
     const g = R.ingredients[id];
-    return `<div class="ing ${askedId===id?'asked':''}" data-ing="${id}"><span class="q t-qty">${esc(g.qty||'—')}</span><span class="n">${esc(g.name)}</span>${askedId===id?`<span class="asked-tag">${ic('voice',16)}Asked</span>`:''}</div>`;
-  }).join('')}</div>`;
+    const right = askedId===id ? `<span class="asked-tag">${ic('voice',16)}Asked</span>`
+      : (R.substitutions[id] ? `<button class="swap" data-act="swap" data-arg="${id}" aria-label="Alternatives for ${esc(g.name)}">${ic('swap',18)}Swap</button>` : '');
+    return `<div class="ing ${askedId===id?'asked':''}" data-ing="${id}"><span class="q t-qty">${esc(g.qty||'—')}</span><span class="n">${esc(g.name)}</span>${right}</div>`;
+  }).join('')}</div>${st.items.some(id=>R.substitutions[id]) ? `<p class="swaphint">${ic('swap',16)}Missing something? Tap Swap or say “${S.wake&&S.handsFree?'Hey Cook, ':''}I don’t have …”</p>` : ''}`;
 }
 
 function bodyHTML(st, land){
   const asked = S.overlay && S.overlay.asked;
-  const head = (d) => `<h1 class="step-h t-title">${esc(st.title)}</h1><p class="step-d t-instr">${esc(d)}</p>`;
+  const ty = STYPE[st.type];
+  const head = (d) => `<div class="stype">${ic(ty[0],18)}${ty[1]}</div><h1 class="step-h t-title">${esc(st.title)}</h1><p class="step-d t-instr">${esc(d)}</p>`;
   if (st.type === 'ingredient'){
     return `<div class="body">${head(land?st.short:st.instruction)}
       ${ingRows(st, asked)}
@@ -385,7 +391,8 @@ const VMAP = {
 function renderVoice(){
   if (!cookEl) return;
   const v = S.voice, m = VMAP[v];
-  const title = S.voiceText || m[0], sub = S.voiceSub || m[1];
+  const title = S.voiceText || m[0];
+  const sub = S.voiceSub || (v==='on' && S.wake ? (awake() ? 'Still listening for a follow-up' : 'Say “Hey Cook”, then a command') : m[1]);
   const right = v==='listening' ? `<span class="wave"><i></i><i></i><i></i><i></i><i></i></span>`
               : v==='error' ? `<span class="retry" data-act="retryVoice">Try again</span>` : '';
   const live = v==='on' ? '<span class="live"></span>' : '';
@@ -439,7 +446,7 @@ function timerHTML(i, st){
     return `<div class="timer idle"><div class="tt"><span>${ic('timer',18)}Timer ready</span></div>
       <div class="big">${fmt(total)}</div>
       <button class="btn accent" data-act="timerStart">${ic('play',22)}Start timer</button>
-      <div class="sayit">or say “Start the timer”</div></div>`;
+      <div class="sayit">or say “${S.wake?'Hey Cook, start':'Start'} the timer”</div></div>`;
   }
   if (T.done){
     return `<div class="timer done"><div class="tt"><span>${ic('timer',18)}${esc(st.timerLabel)} timer</span><span><i class="dot"></i>Done</span></div>
@@ -563,7 +570,7 @@ function renderOverlay(){
   host.innerHTML = h;
 }
 function showToast(kind, via){
-  if (kind==='pause') showOverlay({type:'toast', icon:'pause', title:'Paused', sub: S.handsFree ? 'Say “Play” to continue' : 'Tap the video to play'}, 2500);
+  if (kind==='pause') showOverlay({type:'toast', icon:'pause', title:'Paused', sub: S.handsFree ? (S.wake ? 'Say “Hey Cook, play”' : 'Say “Play” to continue') : 'Tap the video to play'}, 2500);
   else showOverlay({type:'toast', icon:'play', title:'Playing', sub: S.handsFree ? 'Say “Pause” to stop' : 'Tap the video to pause'}, 1600);
 }
 function showPreview(){ showOverlay({type:'preview'}, S.step < R.steps.length-1 ? 12000 : 5000); }
@@ -579,8 +586,8 @@ function showHandsFreePrompt(){
   $('#cookSheet',cookEl).innerHTML = `<div class="scrim"></div><div class="sheet"><div class="grab"></div>
     <div class="okdot" style="margin:0">${ic('mic',24)}</div>
     <h2 class="t-title" style="margin-top:var(--s4)">Cook hands-free?</h2>
-    <p class="lead t-body">Control your recipe with your voice, so your hands can stay on the pan.</p>
-    <div class="privacy t-support">${ic('lock',18)}<span>The mic listens only while hands-free is on. Turn it off any time.</span></div>
+    <p class="lead t-body">Say <b>“Hey Cook”</b>, then a command — like <b>“Hey Cook, next”</b>. Your hands stay on the pan.</p>
+    <div class="privacy t-support">${ic('lock',18)}<span>The mic listens only while hands-free is on, and acts only after “Hey Cook”. Turn it off any time.</span></div>
     <button class="btn primary" data-act="hfYes">${ic('mic',22)}Turn on hands-free</button>
     <button class="btn tertiary" data-act="hfNo">Not now</button>
     <p class="fine">Not now keeps Tap to speak. The system mic permission appears only after you turn hands-free on.</p></div>`;
@@ -601,7 +608,7 @@ function drawOverview(){
     const cls = i<S.step ? 'done' : (i===S.step?'cur':'');
     const icn = i<S.step ? ic('ccheck',22) : (i===S.step ? ic('radioon',22) : ic('radio',22));
     const tag = i<S.step ? 'Done' : (i===S.step?'Now':'');
-    let row = `<button class="srow ${cls}" data-ov="${i}">${icn}<span class="nu">${i+1}</span><span class="st">${esc(s.title)}</span><span class="tag">${tag}</span></button>`;
+    let row = `<button class="srow ${cls}" data-ov="${i}">${icn}<span class="nu">${i+1}</span><span class="st">${esc(s.title)}</span><span class="sti" title="${STYPE[s.type][1]}">${ic(STYPE[s.type][0],18)}</span><span class="tag">${tag}</span></button>`;
     if (S.jumpTarget === i){
       row += `<div class="jump"><b>Jump to Step ${i+1}: ${esc(s.title)}?</b><small>Steps ${S.step+2}–${i} aren’t done yet.</small>
         <div class="two"><button class="btn secondary sm" data-ovact="cancel">Cancel</button><button class="btn dark sm" data-ovact="jump">Jump to Step ${i+1}</button></div></div>`;
@@ -785,7 +792,8 @@ function buildGrammar(){
   for (const [word, alts] of Object.entries(SOUNDALIKE)) [...names].forEach(n => { if (n.includes(word)) alts.forEach(a => names.add(n.replace(word, a))); });
   const q = [];
   names.forEach(n => q.push(`how much ${n}`, `how many ${n}`, `i don't have ${n}`, `no ${n}`, `instead of ${n}`, `substitute ${n}`, `what can i use instead of ${n}`));
-  return cmds.concat(q, ['[unk]']);
+  const base = cmds.concat(q);
+  return base.concat(base.map(x => 'hey cook ' + x), ['hey cook', 'okay cook', '[unk]']);
 }
 async function localStart(){
   try{
@@ -827,6 +835,7 @@ const clean = t => (t||'').replace(/\[unk\]/g,' ').replace(/\s+/g,' ').trim();
 function onLocalPartial(p){
   p = fromSoundalike(clean(p));
   if (!S.handsFree || speaking || Date.now() < LOCAL.ignoreUntil || !p) return;
+  if (S.wake && !awake() && !splitWake(p).woke) return;
   if (S.voice !== 'listening') duck();
   setVoice('listening', 'Listening…', `“${p}”`);
 }
@@ -887,7 +896,7 @@ function onResult(e){
   }
   interim = interim.trim();
   if (interim){
-    const directed = oneShot || (KEYWORDS.test(interim.toLowerCase()) && interim.split(/\s+/).length <= 7);
+    const directed = oneShot || (S.wake ? (awake() || splitWake(interim).woke) : (KEYWORDS.test(interim.toLowerCase()) && interim.split(/\s+/).length <= 7));
     if (directed){
       if (S.voice !== 'listening') duck();
       setVoice('listening','Listening…', `“${interim}”`);
@@ -896,14 +905,38 @@ function onResult(e){
   finals.forEach(alts => handleUtterance(alts));
 }
 
+const WAKE_RE = /^\s*(hey|hi|ok|okay|a|he|hay)\s+(cook|cooke|cooks|cook's|book|look|kook|coke|cuk|cool)\b[\s,]*/i;
+function splitWake(t){ const m = (t||'').match(WAKE_RE); return m ? { woke:true, rest:t.slice(m[0].length).trim() } : { woke:false, rest:t }; }
+const awake = () => Date.now() < S.awakeUntil;
+let wakeT = null;
+function keepAwake(){ S.awakeUntil = Date.now() + 8000; clearTimeout(wakeT);
+  wakeT = setTimeout(()=>{ if (S.voice === 'listening'){ restoreVolume(); setVoice(S.handsFree?'on':'off'); } else renderVoice(); }, 8100); }
+function wakeUp(){
+  keepAwake(); log('wake','', 'voice'); duck(); earcon();
+  setVoice('listening', 'I’m listening', 'Say a command');
+}
+function earcon(){ try{ unlockAudio(); const n=actx.currentTime, o=actx.createOscillator(), g=actx.createGain(); o.type='sine'; o.frequency.setValueAtTime(660,n); o.frequency.linearRampToValueAtTime(990,n+0.12);
+  g.gain.setValueAtTime(0.0001,n); g.gain.exponentialRampToValueAtTime(0.25,n+0.02); g.gain.exponentialRampToValueAtTime(0.0001,n+0.18); o.connect(g).connect(actx.destination); o.start(n); o.stop(n+0.2);}catch(e){} }
+
 function handleUtterance(alts){
   const wasOneShot = oneShot;
   gotFinal = true;
+  if (S.handsFree && S.wake && !wasOneShot){
+    const w = splitWake(alts[0]||'');
+    if (w.woke){
+      if (!w.rest){ wakeUp(); return; }
+      keepAwake(); const c = alts.conf; alts = [w.rest]; alts.conf = c; alts.viaWake = true;
+    } else if (!awake()){
+      log('voice_no_wake', alts[0], 'ignored');
+      if (S.voice === 'listening'){ restoreVolume(); setVoice('on'); }
+      return;
+    } else { keepAwake(); alts.viaWake = true; }
+  }
   let res = null, used = alts[0];
   for (const a of alts){ const r = parse(a); if (r){ res = r; used = a; break; } }
   const words = (alts[0]||'').split(/\s+/).filter(Boolean).length;
   if (!res){
-    const directed = wasOneShot || (KEYWORDS.test((alts[0]||'').toLowerCase()) && words <= 6);
+    const directed = wasOneShot || alts.viaWake || (!S.wake && KEYWORDS.test((alts[0]||'').toLowerCase()) && words <= 6);
     log('voice_unmatched', alts[0], directed ? 'voice' : 'ignored');
     if (directed){
       restoreVolume();
@@ -914,7 +947,7 @@ function handleUtterance(alts){
   }
   const bare = ['next','prev','repeat','pause','play'].includes(res.intent);
   const minConf = S.engine === 'offline' ? 0.55 : 0;
-  if (bare && !wasOneShot && alts.conf > 0 && alts.conf < minConf){
+  if (bare && !wasOneShot && !alts.viaWake && alts.conf > 0 && alts.conf < minConf){
     log('voice_lowconf', `"${used}" ${alts.conf.toFixed(2)}`, 'ignored');
     if (S.voice === 'listening'){ restoreVolume(); setVoice(S.handsFree?'on':'off'); }
     return;
@@ -1134,7 +1167,9 @@ function summary(){
     touchActions: c(e=>e.type==='action'&&e.via==='touch'),
     voiceActions: c(e=>e.type==='voice_command'),
     voiceNotUnderstood: c(e=>e.type==='voice_unmatched'&&e.via==='voice'),
-    ignoredSpeech: c(e=>e.type==='voice_unmatched'&&e.via==='ignored'),
+    ignoredSpeech: c(e=>(e.type==='voice_unmatched'||e.type==='voice_no_wake')&&e.via==='ignored'),
+    wakeWords: c(e=>e.type==='wake'),
+    swapTaps: c(e=>e.type==='swap_tap'),
     repeats: c(e=>e.type==='action'&&e.detail==='repeat'),
     questions: c(e=>e.type==='voice_command'&&/→ (qty|sub)/.test(e.detail)),
     videoFailures: c(e=>e.type==='video_unavailable')
@@ -1151,12 +1186,14 @@ function openFacilitator(){
     <textarea readonly>${esc(lines)}</textarea>
     <button class="btn primary" id="facCopy">Copy log</button>
     <button class="btn secondary" id="facReset">Reset log (new participant)</button>
+    <button class="btn secondary" id="facWake">Wake word “Hey Cook”: ${S.wake?'On':'Off'}</button>
     <button class="btn secondary" id="facMute">Spoken replies: ${S.mute?'Off':'On'}</button>
     <button class="btn secondary" id="facMark">Set step times (mark mode)</button>
     <button class="btn tertiary" id="facClose">Close</button>`;
   document.body.appendChild(d);
   $('#facCopy',d).onclick = ()=>{ copy(`${JSON.stringify(s)}\n${lines}`); $('#facCopy',d).textContent='Copied'; };
   $('#facReset',d).onclick = ()=>{ LOG.events=[]; LOG.t0=Date.now(); d.remove(); };
+  $('#facWake',d).onclick = ()=>{ S.wake = !S.wake; try{localStorage.setItem('ca_wake', S.wake?'1':'0');}catch(e){} $('#facWake',d).textContent = 'Wake word “Hey Cook”: '+(S.wake?'On':'Off'); renderVoice(); };
   $('#facMute',d).onclick = ()=>{ S.mute = !S.mute; try{localStorage.setItem('ca_mute', S.mute?'1':'0');}catch(e){} $('#facMute',d).textContent = 'Spoken replies: '+(S.mute?'Off':'On'); };
   $('#facMark',d).onclick = ()=>{ location.href = location.pathname + '?mark'; };
   $('#facClose',d).onclick = ()=> d.remove();

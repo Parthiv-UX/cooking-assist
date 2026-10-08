@@ -23,3 +23,11 @@ Facilitator panel: triple-tap "Step n of N" (or press L on a laptop). Keyboard: 
 - **Hands-free (default):** offline Vosk recognizer (`model.tar.gz`, Indian-English small model) running in the browser,
   limited to this recipe's command phrases. Mic stays open: no restart loop or beeps, robust to kitchen noise.
 - **Fallback / Tap to speak:** Chrome's speech recognition (needs internet, understands open questions incl. Hindi words).
+
+## v2 — changes from usability testing (3 hostel students, live dish, real kitchen)
+- **Wake word "Hey Cook"** (participant feedback: "voice wake up"; observed false triggers). Commands act only after
+  "Hey Cook"; an 8-second follow-up window allows chained commands without repeating it. Toggle in facilitator panel.
+- **Visible alternatives** (feedback: "suggest alternatives"). Swaps existed by voice only; now every ingredient with an
+  alternative shows a **Swap** button, plus a hint line.
+- **Step-type icons** (feedback: "instruction-based step colour" → implemented as icon + label, not colour alone):
+  Measure & add / Watch & do / Wait — on each step and in the step overview.
